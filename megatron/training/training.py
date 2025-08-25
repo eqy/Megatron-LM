@@ -1045,7 +1045,7 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
 
         throughput = num_floating_point_operations(args, batch_size) / (
             elapsed_time_per_iteration * 10**12 * args.world_size)
-
+        total_throughput = batch_size / elapsed_time_per_iteration
         one_logger_utils.track_e2e_metrics(args.log_throughput, throughput)
 
         if args.log_timers_to_tensorboard:
@@ -1067,9 +1067,11 @@ def training_log(loss_dict, total_loss_dict, learning_rate, decoupled_learning_r
             elapsed_time_per_iteration * 1000.0)
         if args.log_throughput:
             log_string += f' throughput per GPU (TFLOP/s/GPU): {throughput:.1f} |'
+            log_string += f' total throughput (samples/s): {total_throughput:.3f} |'
             if args.log_timers_to_tensorboard:
                 if writer:
                     writer.add_scalar('throughput', throughput, iteration)
+                    writer.add_scalar('total throughput', total_throughput, iteration)
                 if wandb_writer:
                     wandb_writer.log({'throughput': throughput}, iteration)
         # Decoupled_learning_rate should be not None only on first and last pipeline stage.
@@ -1745,7 +1747,6 @@ def evaluate(forward_step_func,
         total_loss_dict[key] = numerator / denominator
 
     timers('evaluate').stop()
-    timers.log(['evaluate'])
 
     rerun_state_machine.set_mode(rerun_mode)
 
@@ -1759,6 +1760,7 @@ def evaluate_and_print_results(prefix, forward_step_func,
                                verbose=False, write_to_tensorboard=True, non_loss_data_func=None):
     """Helper function to evaluate and dump results on screen."""
     args = get_args()
+    timers = get_timers()
     if write_to_tensorboard:
         writer = get_tensorboard_writer()
     else:
@@ -1794,13 +1796,25 @@ def evaluate_and_print_results(prefix, forward_step_func,
                     '{} validation'.format(key): total_loss_dict[key].item()},
                     iteration)
 
+    eval_batch_size = args.global_batch_size  # batch sized used inside evaluate
+    iterations = args.eval_iters
+    elapsed_time = timers('evaluate').elapsed(barrier=True, reset=False)
+
+    throughput = iterations * eval_batch_size / elapsed_time
+    string += f'evaluation throughput (samples/s): {throughput:.3f} |'
+    if writer:
+        writer.add_scalar('validation throughput', throughput, iteration)
+
+
     if process_non_loss_data_func is not None and writer and is_last_rank():
         process_non_loss_data_func(collected_non_loss_data, iteration, writer)
 
     length = len(string) + 1
     print_rank_last('-' * length)
     print_rank_last(string)
+    timers.log(['evaluate'])
     print_rank_last('-' * length)
+
 
 
 def cyclic_iter(iter):
